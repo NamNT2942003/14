@@ -1,14 +1,12 @@
-# Dockerfile kiểm chứng khả năng build container thông qua Docker-outside-of-Docker (DooD)
-FROM eclipse-temurin:17-jre-alpine
-
+# Stage 1: Build & Compile Java Code
+FROM eclipse-temurin:17-jdk-alpine AS builder
 WORKDIR /app
-
-# Khai báo thông tin metadata
-LABEL maintainer="QuickBite DevOps Team"
-LABEL description="QuickBite Service Verification Container for DooD Socket"
-
-# Copy mã nguồn hoặc tài nguyên kiểm thử
 COPY src/ /app/src/
+RUN mkdir -p /app/bin && javac -d /app/bin /app/src/main/java/com/quickbite/user/UserServiceApplication.java
 
-# Lệnh kiểm thử mặc định khi container khởi chạy
-CMD ["echo", "Docker container built successfully inside Self-hosted Runner via DooD socket!"]
+# Stage 2: Lightweight Runtime Environment
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+COPY --from=builder /app/bin /app/bin
+EXPOSE 8081
+CMD ["java", "-cp", "/app/bin", "com.quickbite.user.UserServiceApplication"]

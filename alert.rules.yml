@@ -1,0 +1,20 @@
+groups:
+  - name: host_and_service_alerts
+    rules:
+      - alert: HighCpuUsage
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cảnh báo tải CPU cao trên {{ $labels.instance }}"
+          description: "Mức sử dụng CPU vượt ngưỡng 85% trong hơn 5 phút."
+
+      - alert: BackendHttp500ErrorsDetected
+        expr: sum(rate(http_server_requests_seconds_count{status="500"}[1m])) > 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Phát hiện lỗi HTTP 500 trên Backend Service"
+          description: "Có request bị lỗi 500 trả về trong 1 phút qua. Kiểm tra log backend khẩn cấp!"

@@ -1,29 +1,81 @@
 version: '3.8'
 
 services:
-  github-runner:
-    image: myoung34/github-runner:latest
-    container_name: quickbite-dood-runner
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: quickbite-backend
     restart: unless-stopped
+    ports:
+      - "8081:8081"
     environment:
-      # URL của GitHub Repository hoặc Organization cần đăng ký runner
-      - REPO_URL=${REPO_URL:-https://github.com/NamNT2942003/8}
-      # Token đăng ký runner (lấy tại repo: Settings > Actions > Runners > New runner)
-      - RUNNER_TOKEN=${RUNNER_TOKEN}
-      # Tên định danh của runner hiển thị trong danh sách GitHub Actions
-      - RUNNER_NAME=${RUNNER_NAME:-quickbite-dood-runner}
-      # Các nhãn (Labels) để workflow GitHub Actions định tuyến chính xác vào runner này
-      - LABELS=${LABELS:-self-hosted,dood-runner,linux}
-      # Thư mục làm việc của runner bên trong container
-      - RUNNER_WORKDIR=/_work
-    volumes:
-      # =========================================================================
-      # GIẢI PHÁP SỬA LỖI DOOD (Docker-outside-of-Docker):
-      # Ánh xạ UNIX Domain Socket từ máy host vào bên trong container Runner.
-      # Giúp Docker CLI trong container có thể gửi REST API commands trực tiếp
-      # tới Docker Daemon (dockerd) đang chạy trên máy Host.
-      # =========================================================================
-      - /var/run/docker.sock:/var/run/docker.sock
+      - SERVER_PORT=8081
+      - SPRING_APPLICATION_NAME=quickbite-user-service
+    networks:
+      - monitoring-net
 
-      # Thư mục chứa workspace build và lưu cache dữ liệu giữa các lần chạy job
-      - ./runner-work:/_work
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    networks:
+      - monitoring-net
+
+  grafana:
+    image: grafana/grafana:10.4.1
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      # Tự động nạp Prometheus Datasource (Zero-touch Provisioning)
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - prometheus
+      - backend
+    networks:
+      - monitoring-net
+
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: node-exporter
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+    networks:
+      - monitoring-net
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks:
+      - monitoring-net
+
+networks:
+  monitoring-net:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:

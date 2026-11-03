@@ -1,302 +1,242 @@
-# BÁO CÁO KỸ THUẬT: SỬA LỖI CẤU HÌNH CHIA SẺ DOCKER SOCKET (DooD)
+# BÁO CÁO KỸ THUẬT: HỆ THỐNG GIÁM SÁT TOÀN DIỆN VỚI PROMETHEUS & GRAFANA (NOC)
 
 - **Dự án**: QuickBite Microservices Platform
-- **Vị trí**: Junior DevOps Engineer
-- **Chủ đề**: Tích hợp CI/CD & Mô hình Docker-outside-of-Docker (DooD) trên Self-hosted Runner
+- **Học phần**: Monitoring, Alerting & Observability
 - **Tác giả**: NamNT (NamNTHE176286)
-- **Repository**: [NamNT2942003/8](https://github.com/NamNT2942003/8)
+- **Repository**: [NamNT2942003/14](https://github.com/NamNT2942003/14)
 
 ---
 
-## 1. BỐI CẢNH & PHÂN TÍCH NGUYÊN NHÂN GỐC RỄ (ROOT CAUSE ANALYSIS)
+## MỤC LỤC
+1. [Bài 1: Vận dụng cơ bản - "Giao tiếp giữa 2 người khổng lồ" (Grafana & Prometheus)](#bài-1-vận-dụng-cơ-bản---giao-tiếp-giữa-2-người-khổng-lồ)
+2. [Bài 2: Vận dụng cơ bản - "Vẽ biểu đồ sức khỏe VPS" (PromQL & Panel Units)](#bài-2-vận-dụng-cơ-bản---vẽ-biểu-đồ-sức-khỏe-vps)
+3. [Bài 3: Vận dụng chuyên sâu - "Đứng trên vai người khổng lồ" (Import Template 4701 & JVM)](#bài-3-vận-dụng-chuyên-sâu---đứng-trên-vai-người-khổng-lồ)
+4. [Bài 4: Vận dụng chuyên sâu - "Bảng điều khiển động" (Variables & Dynamic Dashboard)](#bài-4-vận-dụng-chuyên-sâu---bảng-điều-khiển-động)
+5. [Bài 5: Phân tích kỹ thuật - "Cuộc chiến Cảnh báo: Grafana Alerts vs Alertmanager"](#bài-5-phân-tích-kỹ-thuật---cuộc-chiến-cảnh-báo-grafana-alerts-vs-alertmanager)
+6. [Bài Tập Thực Hành: Xây dựng Trung tâm Giám sát Điều hành (NOC)](#bài-tập-thực-hành-xây-dựng-trung-tâm-giám-sát-điều-hành-noc)
 
-### 1.1. Thông báo lỗi thực tế
-Khi luồng CI trên Self-hosted Runner (chạy dưới dạng Docker container) kích hoạt câu lệnh `docker build` hoặc `docker info`, tiến trình CI lập tức bị hủy bỏ với thông báo lỗi:
+---
 
-```text
-Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?
+## BÀI 1: VẬN DỤNG CƠ BẢN - "GIAO TIẾP GIỮA 2 NGƯỜI KHỔNG LỒ"
+
+### 1. Cấu hình Docker Compose kết nối Grafana và Prometheus
+Dịch vụ Grafana được tích hợp vào cụm `docker-compose.yml`, mở cổng `3000:3000` và kết nối cùng mạng bridge `monitoring-net`:
+
+```yaml
+services:
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - monitoring-net
+
+  grafana:
+    image: grafana/grafana:10.4.1
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+      - monitoring-net
 ```
 
-### 1.2. Bản chất kiến trúc Docker (Client - Server Architecture)
-Để giải quyết tận gốc vấn đề, cần hiểu rõ cách thức hoạt động nội tại của Docker:
-- **Docker Client (`docker` CLI)**: Là công cụ giao diện dòng lệnh mà người dùng hoặc tiến trình CI tương tác (ví dụ: gõ lệnh `docker build`, `docker run`). Docker CLI **không trực tiếp** tạo ra container hay biên dịch image.
-- **Docker Daemon (`dockerd`)**: Là một tiến trình chạy ngầm (service/daemon) trên hệ điều hành, chịu trách nhiệm quản lý toàn bộ vòng đời của image, container, volume, network và lưu trữ.
-- **Kênh giao tiếp IPC (UNIX Domain Socket)**:
-  - Trên hệ điều hành Linux, giao tiếp mặc định giữa Docker Client và Docker Daemon là thông qua tệp socket đặc biệt dạng IPC (Inter-Process Communication) nằm tại:
-    $$\text{Đường dẫn Socket: } \texttt{/var/run/docker.sock}$$
-  - Mỗi khi một câu lệnh Docker được gọi, Docker Client sẽ mở kết nối HTTP REST qua socket này tới `dockerd`.
+### 2. Các bước cấu hình Prometheus làm Data Source trên Grafana
+1. Mở trình duyệt truy cập: `http://localhost:3000` (Tài khoản: `admin` / `admin`).
+2. Tại menu bên trái, chọn **Connections** $\rightarrow$ **Data sources** (hoặc truy cập `http://localhost:3000/datasources`).
+3. Nhấn **Add data source**, chọn **Prometheus**.
+4. Tại ô **Prometheus server URL**, nhập chính xác: `http://prometheus:9090`.
+5. Cuộn xuống nhấn nút **Save & test**. Khi xuất hiện thông báo xanh lá `Successfully queried the Prometheus API.` là kết nối thành công.
+
+### 3. Phân tích bẫy kỹ thuật: `http://localhost:9090` vs `http://prometheus:9090`
+- **Đáp án**: URL bắt buộc phải là **`http://prometheus:9090`**.
+- **Giải thích dựa trên kiến trúc mạng Docker Compose**:
+  - **Network Namespace cô lập**: Mỗi container Docker chạy trên một network namespace riêng rẽ và có loopback interface (`127.0.0.1` / `localhost`) độc lập. Khi đứng bên trong container `grafana`, `localhost` đại diện cho chính nó, không phải Prometheus hay máy host.
+  - **Embedded DNS & Service Discovery**: Docker Compose tự động tạo một mạng bridge riêng (`monitoring-net`) và kích hoạt **Embedded DNS Server** (IP `127.0.0.11`). DNS này tự động phân giải service name `prometheus` thành IP nội bộ của container Prometheus.
 
 ```mermaid
 flowchart LR
-    subgraph Host_Machine ["Máy chủ Host (Linux Server)"]
-        DockerCLI_Host["Docker CLI (Host)"]
-        DockerSock["UNIX Socket:\n/var/run/docker.sock"]
-        DockerDaemon["Docker Daemon (dockerd)\nQuản lý Image & Containers"]
+    subgraph Docker_Bridge_Network ["Docker Network: monitoring-net (Bridge)"]
+        Grafana["Grafana Container\n(localhost = chính nó)"]
+        DockerDNS["Docker Embedded DNS\n(127.0.0.11)\nprometheus -> 172.20.0.2"]
+        Prometheus["Prometheus Container\n(IP: 172.20.0.2:9090)"]
         
-        DockerCLI_Host -->|REST API over Socket| DockerSock
-        DockerSock --> DockerDaemon
+        Grafana -->|1. Query: http://prometheus:9090| DockerDNS
+        DockerDNS -->|2. Phân giải IP| Grafana
+        Grafana -->|3. Kết nối trực tiếp| Prometheus
     end
 ```
 
-### 1.3. Tại sao Runner gặp lỗi "Cannot connect to the Docker daemon"?
-- Container Self-hosted Runner (`quickbite-dood-runner`) là một môi trường Linux bị **cô lập (isolated sandbox)**.
-- Khi cài đặt Docker CLI vào trong container Runner, nó chỉ có sẵn công cụ Client, **không có `dockerd` (Docker Daemon) chạy bên trong container**.
-- Nếu trong cấu hình khởi tạo container Runner (`docker-compose.yml`), chúng ta **chưa cấu hình Volume mount** cho tệp socket `/var/run/docker.sock`, bên trong hệ thống tệp của container sẽ không tồn tại tệp socket này.
-- Khi bước CI chạy lệnh `docker build`, Docker CLI bên trong container cố gắng gửi request tới `/var/run/docker.sock` nội bộ (vốn không tồn tại), dẫn đến lỗi:
-  $$\implies \textbf{Lỗi: } \texttt{Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?}$$
+---
+
+## BÀI 2: VẬN DỤNG CƠ BẢN - "VẼ BIỂU ĐỒ SỨC KHỎE VPS"
+
+### 1. Panel 1: Biểu đồ Time series - Mức sử dụng CPU hiện tại (%)
+- **Câu truy vấn PromQL**:
+  ```promql
+  100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
+  ```
+- **Giải thích**:
+  - `rate(node_cpu_seconds_total{mode="idle"}[5m])`: Tính tỷ lệ thời gian CPU ở trạng thái rảnh rỗi (`idle`) trong 5 phút gần nhất.
+  - `avg by (instance) (...)`: Lấy trung bình toàn bộ core CPU theo từng instance.
+  - `100 - (...) * 100`: Lấy 100% trừ đi % rảnh rỗi để có được % CPU đang thực sự bận rộn xử lý.
+- **Cấu hình Panel bên phải**:
+  - **Visualization**: `Time series`.
+  - **Standard options $\rightarrow$ Unit**: `Misc` $\rightarrow$ `Percent (0-100)`.
+  - **Min**: `0`, **Max**: `100`.
+
+### 2. Panel 2: Biểu đồ Stat - Tổng lượng RAM còn trống (Free RAM)
+- **Câu truy vấn PromQL**:
+  ```promql
+  node_memory_MemFree_bytes
+  ```
+- **Phân tích bẫy kỹ thuật (Đơn vị Bytes vs MB/GB)**:
+  - *Vấn đề*: Metric trả về đơn vị thô là Bytes. Không nên chia thủ công trong câu truy vấn (`node_memory_MemFree_bytes / 1024 / 1024`) vì sẽ làm mất ngữ cảnh kiểu dữ liệu, khiến Grafana không tự co giãn đơn vị khi dung lượng RAM tăng giảm.
+  - *Cách cấu hình chuẩn xác trên Grafana UI*:
+    - Tại thanh cấu hình bên phải, tìm mục **Standard options** $\rightarrow$ **Unit**.
+    - Chọn **Data** $\rightarrow$ **bytes (IEC)** (hoặc **bytes (Metric)**). Grafana sẽ tự động định dạng và co giãn hiển thị thông minh (ví dụ: `512 MiB`, `2.4 GiB`).
+    - Nếu sếp yêu cầu cố định chỉ hiển thị MB: chọn **Data** $\rightarrow$ **Megabytes**.
+    - Tại mục **Stat styles** $\rightarrow$ **Calculation**: Chọn `Last *` (lấy giá trị thời gian thực gần nhất).
 
 ---
 
-## 2. SO SÁNH HAI MÔ HÌNH: DinD (Docker-in-Docker) vs DooD (Docker-outside-of-Docker)
+## BÀI 3: VẬN DỤNG CHUYÊN SÂU - "ĐỨNG TRÊN VAI NGƯỜI KHỔNG LỒ"
 
-Khi muốn chạy lệnh Docker bên trong một container (Runner), giới DevOps có 2 giải pháp chính:
+### 1. Các bước Import Dashboard bằng ID 4701 (JVM Micrometer)
+1. Truy cập Grafana $\rightarrow$ menu bên trái chọn **Dashboards**.
+2. Nhấn nút **New** $\rightarrow$ chọn **Import** (hoặc truy cập `http://localhost:3000/dashboard/import`).
+3. Tại ô **Import via grafana.com**, nhập ID: `4701` và bấm **Load**.
+4. Chọn Data Source **Prometheus** đã tạo và bấm nút **Import**.
 
-| Tiêu chí | Mô hình DinD (Docker-in-Docker) | Mô hình DooD (Docker-outside-of-Docker) |
+### 2. Mô tả 3 biểu đồ quan trọng nhất đối với ứng dụng Java (JVM)
+
+| Tên biểu đồ | Metric PromQL sử dụng | Ý nghĩa & Cảnh báo nghiệp vụ |
 | :--- | :--- | :--- |
-| **Cơ chế hoạt động** | Khởi chạy một Docker Daemon độc lập hoàn toàn bên trong container runner | Chia sẻ Docker Daemon của máy Host vào container thông qua socket `/var/run/docker.sock` |
-| **Yêu cầu bảo mật** | Yêu cầu cờ `--privileged`, cấp toàn quyền truy cập kernel cho container (rất nguy hiểm) | Không cần `--privileged`, chạy như một non-root hoặc docker-group container |
-| **Tốc độ build & Cache** | Chậm, cache image bị mất khi container runner khởi động lại | **Rất nhanh**, tái sử dụng 100% cache image có sẵn trên Docker Daemon của máy host |
-| **Độ phức tạp** | Phức tạp (xung đột cgroups, LSM, storage driver lồng ghép) | **Đơn giản, tinh gọn**, chỉ cần cấu hình 1 dòng mount volume duy nhất |
-| **Khuyến nghị công nghiệp**| Tránh dùng trong CI/CD nội bộ nếu không bắt buộc | **Tiêu chuẩn thực tế (Industry Standard)** cho CI/CD Self-hosted Runner |
+| **1. JVM Memory (Heap: Used vs Committed vs Max)** | `jvm_memory_used_bytes{area="heap"}`<br>`jvm_memory_committed_bytes{area="heap"}`<br>`jvm_memory_max_bytes{area="heap"}` | • **Ý nghĩa**: Giám sát mức tiêu thụ bộ nhớ Heap (Eden, Survivor, Old Gen).<br>• **Cảnh báo**: Nếu đường `Used` tăng liên tục dạng bậc thang và không hạ xuống sau các chu kỳ GC, ứng dụng đang bị **Rò rỉ bộ nhớ (Memory Leak)**, sắp dẫn đến `java.lang.OutOfMemoryError: Java heap space`. |
+| **2. Garbage Collection (GC Pause Time)** | `rate(jvm_gc_pause_seconds_sum[1m])`<br>`rate(jvm_gc_pause_seconds_count[1m])` | • **Ý nghĩa**: Đo thời gian và tần suất JVM tạm dừng luồng ứng dụng (**Stop-The-World**) để thu gom rác.<br>• **Cảnh báo**: GC Pause time quá dài (> 200ms) sẽ gây ra **Latency Spikes** (đột biến độ trễ API), làm khách hàng timeout và nghẽn CPU. |
+| **3. JVM Threads (Live vs Peak vs Daemon)** | `jvm_threads_live_threads`<br>`jvm_threads_peak_threads`<br>`jvm_threads_daemon_threads` | • **Ý nghĩa**: Giám sát số luồng đang hoạt động song song trong JVM.<br>• **Cảnh báo**: Số thread tăng mất kiểm soát cảnh báo **Thread Leak** hoặc hiện tượng **Deadlock** khi chịu tải cao. |
 
-$$\implies \textbf{Kết luận: } \text{Mô hình DooD là giải pháp tối ưu và an toàn nhất cho hệ thống CI của QuickBite.}$$
-
-```mermaid
-flowchart TD
-    subgraph Host_Linux ["Máy chủ Host (Linux)"]
-        Daemon["Docker Daemon (dockerd)"]
-        HostSock["Host Socket: /var/run/docker.sock"]
-        Daemon <--> HostSock
-
-        subgraph Container_Runner ["Container: quickbite-dood-runner"]
-            CI_Job["GitHub Actions CI Job\n(docker build, docker info)"]
-            RunnerCLI["Docker CLI"]
-            ContSock["Container Socket: /var/run/docker.sock"]
-            
-            CI_Job --> RunnerCLI
-            RunnerCLI <--> ContSock
-        end
-        
-        HostSock == Bind Mount Volume == ContSock
-    end
-```
+### 3. Phân tích bẫy kỹ thuật: Khắc phục lỗi "No data" do thiếu tag `application`
+- **Nguyên nhân**: Dashboard 4701 khai báo biến `$application` truy vấn qua `label_values(jvm_classes_loaded_classes, application)`. Nếu Spring Boot không gắn tag định danh `application` cho metrics, biến này sẽ rỗng và toàn bộ panel đều bị "No data".
+- **Khắc phục trong `application.yml`**:
+  ```yaml
+  management:
+    endpoints:
+      web:
+        exposure:
+          include: health,info,prometheus,metrics
+    metrics:
+      tags:
+        application: ${spring.application.name}  # <-- DÒNG BỊ THIẾU QUYẾT ĐỊNH
+  ```
 
 ---
 
-## 3. GIẢI PHÁP & CẤU HÌNH THIẾT LẬP RUNNER (`docker-compose.yml`)
+## BÀI 4: VẬN DỤNG CHUYÊN SÂU - "BẢNG ĐIỀU KHIỂN ĐỘNG"
 
-Để khắc phục lỗi trên, chúng ta thực hiện **Bind Mount** tệp socket vật lý từ máy host vào đúng vị trí mặc định bên trong container Runner.
+### 1. Hướng dẫn tạo biến (Variable) `instance`
+1. Vào **Dashboard settings** (biểu tượng bánh răng ở góc trên bên phải) $\rightarrow$ chọn **Variables** $\rightarrow$ bấm **Add variable**.
+2. Thiết lập thông số:
+   - **Name**: `instance`
+   - **Type**: `Query`
+   - **Data source**: `Prometheus`
+   - **Query**:
+     ```promql
+     label_values(node_uname_info, instance)
+     ```
+   - **Selection options**: Bật `Multi-value` (chọn nhiều server) và `Include All option` (chọn tất cả server).
+3. Bấm **Apply** và **Save dashboard**.
 
-### 3.1. Cấu hình hoàn chỉnh file `docker-compose.yml`
+### 2. Phân tích bẫy kỹ thuật: Viết lại câu truy vấn có chứa biến
+- **Câu truy vấn cũ (viết cứng IP)**:
+  ```promql
+  node_memory_MemFree_bytes{instance="192.168.1.10:9100"}
+  ```
+- **Câu truy vấn mới (chuẩn Best Practice)**:
+  ```promql
+  node_memory_MemFree_bytes{instance=~"$instance"}
+  ```
+- **Giải thích bẫy**: Khi bật `Multi-value` hoặc `All`, biến `$instance` trả về biểu thức regex dạng `(server1|server2)`. Nếu dùng toán tử gán `=` sẽ bị lỗi không khớp và báo No data; bắt buộc phải dùng toán tử Regex Match **`=~`** để hỗ trợ hoàn hảo cả 1 server lẫn nhiều server.
 
+---
+
+## BÀI 5: PHÂN TÍCH KỸ THUẬT - "CUỘC CHIẾN CẢNH BÁO: GRAFANA ALERTS VS ALERTMANAGER"
+
+### 1. Rủi ro Single Point of Failure (SPOF) của Grafana
+- Grafana là công cụ **Visualization**. Nếu máy chủ Grafana bị sập (hết RAM, OOM kill, ngắt mạng), **tiến trình Alert Engine của Grafana sẽ chết hoàn toàn**.
+- Hậu quả: Không có cảnh báo nào được gửi đi (hiện tượng **Silent Failure**). Hệ thống production sập trong im lặng mà đội ngũ on-call không hề nhận được notification.
+
+### 2. Mô hình High Availability (HA): Alertmanager vs Grafana Alerts
+- **Alertmanager HA**: Sử dụng mạng Mesh Network ngang hàng (P2P) qua giao thức Gossip (HashiCorp Memberlist). Không phụ thuộc bất kỳ database tập trung nào. Nhiều node Alertmanager tự động khử trùng lặp cảnh báo (Deduplication) và chuyển tiếp tin cậy.
+- **Grafana Alerts HA**: Phải phụ thuộc vào cơ sở dữ liệu chung (PostgreSQL/MySQL) để lưu state và locking. Nếu cơ sở dữ liệu này gặp trục trặc, toàn bộ cụm cảnh báo của Grafana lập tức bị tê liệt.
+
+### 3. Khuyết điểm của Click-Ops (Giao diện Grafana) trong IaC và CI/CD
+- **Không có Version Control & Audit Trail**: Sửa bằng tay trên GUI không lưu lại lịch sử commit, không biết ai đã đổi ngưỡng cảnh báo, lúc nào và vì lý do gì.
+- **Không thể Code Review (Pull Request)**: Không có quy trình phê duyệt rà soát trước khi đẩy lên production, dễ dẫn đến lỗi thao tác người dùng (Human Error).
+- **Khó khăn khi Rollback & Tự động hóa**: Không thể tự động deploy đồng bộ giữa môi trường Dev/Staging/Production; không thể rollback tức thì bằng `git revert`.
+- **Alertmanager với GitOps**: Toàn bộ luật được viết dưới dạng file YAML (`alert.rules.yml`, `alertmanager.yml`), lưu trữ trên Git, kiểm tra cú pháp tự động bằng CI với lệnh:
+  ```bash
+  promtool check rules alert.rules.yml
+  amtool check-config alertmanager.yml
+  ```
+
+---
+
+## BÀI TẬP THỰC HÀNH: XÂY DỰNG TRUNG TÂM GIÁM SÁT ĐIỀU HÀNH (NOC)
+
+### 1. Kiến trúc All-in-one Docker Compose
+Cụm dịch vụ hợp nhất bao gồm:
+- **`backend`**: Ứng dụng QuickBite User Service chạy trên cổng `8081`.
+- **`prometheus`**: Cổng `9090`, cào metrics định kỳ 5s từ backend và node-exporter.
+- **`grafana`**: Cổng `3000`, tự động provision Data Source Prometheus qua file cấu hình.
+- **`node-exporter`**: Cổng `9100`, đo metrics phần cứng VPS.
+- **`alertmanager`**: Cổng `9093`, quản lý và điều hướng cảnh báo.
+
+### 2. Cơ chế Datasource Auto Provisioning
+File `grafana/provisioning/datasources/datasources.yml` được mount vào container Grafana giúp tự động khởi tạo kết nối tới Prometheus ngay khi khởi động:
 ```yaml
-version: '3.8'
-
-services:
-  github-runner:
-    image: myoung34/github-runner:latest
-    container_name: quickbite-dood-runner
-    restart: unless-stopped
-    environment:
-      # URL của GitHub Repository cần kết nối runner
-      - REPO_URL=${REPO_URL:-https://github.com/NamNT2942003/8}
-      # Registration Token một lần sinh ra từ GitHub Repo
-      - RUNNER_TOKEN=${RUNNER_TOKEN}
-      # Tên hiển thị của Runner trên GitHub Actions
-      - RUNNER_NAME=${RUNNER_NAME:-quickbite-dood-runner}
-      # Nhãn định tuyến (Labels) để Job CI nhận diện chính xác Runner
-      - LABELS=${LABELS:-self-hosted,dood-runner,linux}
-      # Thư mục làm việc của Runner bên trong container
-      - RUNNER_WORKDIR=/_work
-    volumes:
-      # =========================================================================
-      # [CỐT LÕI - SỬA LỖI DOOD]:
-      # Cú pháp: <Đường_dẫn_Host>:<Đường_dẫn_Container>
-      # Ánh xạ UNIX domain socket của Docker Daemon từ máy chủ Host vào container.
-      # Giúp Docker CLI trong Runner điều khiển trực tiếp Daemon của Host.
-      # =========================================================================
-      - /var/run/docker.sock:/var/run/docker.sock
-
-      # Mount thư mục lưu trữ workspace code và cache build ra ngoài máy host
-      - ./runner-work:/_work
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
 ```
 
-### 3.2. File cấu hình môi trường `.env.example`
-Tạo file `.env` cạnh `docker-compose.yml` để lưu trữ token an toàn, không commit thông tin nhạy cảm lên Git:
+### 3. Vẽ biểu đồ lưu lượng HTTP Requests `/api/hello`
+- **PromQL**:
+  ```promql
+  sum(rate(http_server_requests_seconds_count{uri="/api/hello"}[1m]))
+  ```
+- **Panel format**: `Time series`, Unit: `Throughput -> requests/sec (rps)`.
 
-```env
-REPO_URL=https://github.com/NamNT2942003/8
-RUNNER_TOKEN=AB12CD34EF56GH78IJ90KL
-RUNNER_NAME=quickbite-dood-runner
-LABELS=self-hosted,dood-runner,linux
-```
+### 4. Cấu hình Alerting cho lỗi HTTP 500
+- **Alert Rule**:
+  ```promql
+  sum(rate(http_server_requests_seconds_count{status="500"}[1m])) > 0
+  ```
+- **Evaluation Behavior**: Đánh giá mỗi `10s` trong khoảng thời gian `30s`.
+- **Contact point**: Tích hợp Telegram Bot hoặc Slack Webhook.
+
+### 5. Hướng dẫn kiểm thử và kích hoạt cảnh báo (Testing & Verification)
+1. Khởi động toàn bộ hệ thống:
+   ```bash
+   docker compose up -d --build
+   ```
+2. Gửi request thông thường tới `/api/hello`:
+   ```bash
+   curl http://localhost:8081/api/hello
+   ```
+3. Giả lập sự cố bằng cách gọi liên tục endpoint lỗi `/api/error`:
+   ```powershell
+   for ($i=1; $i -le 30; $i++) { curl http://localhost:8081/api/error ; Start-Sleep -Milliseconds 300 }
+   ```
+4. Quan sát trên Grafana Alerting: Alert Rule `Backend_HTTP_500_Error_Spike` chuyển sang trạng thái **Firing** và gửi tin nhắn cảnh báo tức thì về Telegram/Slack!
 
 ---
-
-## 4. LUỒNG WORKFLOW CI KIỂM CHỨNG (`.github/workflows/ci.yml`)
-
-Để chứng minh Runner đã được cấp quyền và thực thi các câu lệnh Docker thành công thông suốt, xây dựng workflow kiểm chứng tự động:
-
-```yaml
-name: Verify Docker DooD Socket CI
-
-on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
-
-jobs:
-  docker_dood_test:
-    name: Test Docker-outside-of-Docker (DooD) Execution
-    # Chỉ định chạy trên Runner vừa cấu hình thông qua nhãn
-    runs-on: [self-hosted, dood-runner]
-    steps:
-      - name: Checkout Repository Code
-        uses: actions/checkout@v4
-
-      - name: 1. Kiểm tra kết nối tới Docker Daemon (docker version & info)
-        run: |
-          echo "=========================================================="
-          echo " Kiểm tra kết nối Docker Daemon qua socket /var/run/docker.sock"
-          echo "=========================================================="
-          docker version
-          echo "----------------------------------------------------------"
-          docker info | grep -E "Server Version|Operating System|OSType|Architecture|Docker Root Dir"
-
-      - name: 2. Kiểm chứng lệnh Docker Build (DooD Verification)
-        run: |
-          echo "=========================================================="
-          echo " Thực hiện build Docker Image bằng Docker Daemon của Host"
-          echo "=========================================================="
-          docker build -t quickbite/dood-verification:v1.0 .
-
-      - name: 3. Kiểm chứng Image vừa build trong hệ thống Host
-        run: |
-          echo "=========================================================="
-          echo " Danh sách image được lưu trên Docker Host:"
-          echo "=========================================================="
-          docker images | grep "quickbite/dood-verification"
-
-      - name: 4. Chạy thử container để xác nhận hoàn tất quy trình
-        run: |
-          echo "=========================================================="
-          echo " Khởi chạy container vừa build để xác nhận:"
-          echo "=========================================================="
-          docker run --rm quickbite/dood-verification:v1.0
-          echo " CI Job hoàn thành xuất sắc! Docker Socket hoạt động 100%!"
-```
-
----
-
-## 5. HƯỚNG DẪN THỰC THI & KIỂM CHỨNG TỪNG BƯỚC
-
-### Bước 1: Lấy Runner Registration Token từ GitHub
-1. Mở Repository trên GitHub: `https://github.com/NamNT2942003/8` (hoặc repo của bạn).
-2. Vào **Settings** -> **Actions** -> **Runners** -> Click nút **New runner** -> Chọn **OS: Linux**.
-3. Sao chép chuỗi mã Token sau tham số `--token` (ví dụ: `BD7H6...`).
-
-### Bước 2: Khởi chạy Self-hosted Runner với Docker Compose
-1. Tạo file `.env` và dán token vừa lấy:
-   ```bash
-   cp .env.example .env
-   # Sửa RUNNER_TOKEN=chuỗi_token_của_bạn
-   ```
-2. Khởi động Runner trong chế độ ngầm (`detached mode`):
-   ```bash
-   docker compose up -d
-   ```
-3. Kiểm tra trạng thái container:
-   ```bash
-   docker compose ps
-   docker compose logs -f
-   ```
-   *Khi log hiển thị `Listening for Jobs` và trên GitHub trạng thái Runner chuyển sang màu xanh **Idle**, Runner đã sẵn sàng nhận việc!*
-
-### Bước 3: Push code và kiểm tra kết quả CI
-1. Commit và push các tệp cấu hình lên branch `main`:
-   ```bash
-   git add .
-   git commit -m "fix(runner): mount /var/run/docker.sock to enable Docker-outside-of-Docker (DooD)"
-   git push origin main
-   ```
-2. Truy cập tab **Actions** trên GitHub và theo dõi Job.
-
----
-
-## 6. BẰNG CHỨNG THỰC NGHIỆM: LOG CHẠY THÀNH CÔNG (PROVEN LOG OUTPUT)
-
-Dưới đây là trích xuất log thực tế chứng minh container Runner kết nối thành công tới Docker Daemon của máy host và thực thi lệnh `docker build` thông suốt:
-
-```text
-Run docker version
-==========================================================
- Kiểm tra kết nối Docker Daemon qua socket /var/run/docker.sock
-==========================================================
-Client:
- Version:           28.4.0
- API version:       1.51
- Go version:        go1.24.7
- Git commit:        d8eb465
- OS/Arch:           linux/amd64
- Context:           default
-
-Server: Docker Desktop 4.46.0 (204649)
- Engine:
-  Version:          28.4.0
-  API version:      1.51 (minimum version 1.24)
-  Go version:       go1.24.7
-  Git commit:       249d679
-  OS/Arch:          linux/amd64
-  Experimental:     false
- containerd:
-  Version:          1.7.27
- runc:
-  Version:          1.2.5
- docker-init:
-  Version:          0.19.0
-----------------------------------------------------------
- Server Version: 28.4.0
- Operating System: Linux
- OSType: linux
- Architecture: x86_64
- Docker Root Dir: /var/lib/docker
-
-Run docker build -t quickbite/dood-verification:v1.0 .
-==========================================================
- Thực hiện build Docker Image bằng Docker Daemon của Host
-==========================================================
-#1 [internal] load build definition from Dockerfile
-#1 transferring dockerfile: 457B done
-#2 [internal] load .dockerignore
-#2 transferring context: 2B done
-#3 [internal] load metadata for docker.io/library/eclipse-temurin:17-jre-alpine
-#4 [1/3] FROM docker.io/library/eclipse-temurin:17-jre-alpine
-#5 [2/3] WORKDIR /app
-#6 [3/3] COPY src/ /app/src/
-#7 exporting to image
-#7 exporting layers done
-#7 writing image sha256:7c61f237bf425b7410de83b994801ca2ef90ee123
-#7 naming to docker.io/quickbite/dood-verification:v1.0 done
-
-Run docker images | grep "quickbite/dood-verification"
-==========================================================
- Danh sách image được lưu trên Docker Host:
-==========================================================
-quickbite/dood-verification   v1.0      7c61f237bf42   12 seconds ago   228MB
-
-Run docker run --rm quickbite/dood-verification:v1.0
-==========================================================
- Khởi chạy container vừa build để xác nhận:
-==========================================================
-Docker container built successfully inside Self-hosted Runner via DooD socket!
- CI Job hoàn thành xuất sắc! Docker Socket hoạt động 100%!
-```
-
----
-
-## 7. KẾT LUẬN & ĐÁNH GIÁ
-
-1. **Hiểu rõ bản chất DooD**: Việc chia sẻ tệp socket vật lý `/var/run/docker.sock` là cơ chế cốt lõi để container runner có thể tương tác với Docker engine của host mà không cần quyền `--privileged`.
-2. **Khắc phục triệt để**: Bổ sung volume mapping `- /var/run/docker.sock:/var/run/docker.sock` trong `docker-compose.yml` loại bỏ hoàn toàn lỗi kết nối daemon.
-3. **Pipeline hoàn chỉnh**: CI workflow được thiết lập chuẩn mực với nhãn `runs-on: [self-hosted, dood-runner]`, kiểm thử toàn diện từ kết nối (`docker version`, `docker info`) đến hành vi build/run image.
+*Báo cáo hoàn thành đầy đủ các yêu cầu bài tập và sẵn sàng nộp bài trên Portal.*
